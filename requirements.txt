@@ -1,6 +1,6 @@
 streamlit==1.28.0
 pandas==2.0.3
 plotly==5.15.0
-Pillow==10.0.1
+Pillow==10.0.0
 altair==4.2.2
 sqlite3
