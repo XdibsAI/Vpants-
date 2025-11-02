@@ -13,14 +13,16 @@ from services.stock_service import StockService
 from services.stock_management_service import StockManagementService
 from services.initial_setup_service import InitialSetupService
 from services.report_service import ReportService
+from services.production_service import ProductionService
+from services.sales_service import SalesService
 from models.transaction import Transaction
 from models.stock import StockItem
-from utils.helpers import format_currency
+from utils.helpers import format_currency, safe_float
 
 # Page configuration
 st.set_page_config(
     page_title="VPants - Pembukuan & Stok Otomatis",
-    page_icon="👖",
+    page_icon="👙",
     layout="wide"
 )
 
@@ -33,6 +35,8 @@ stock_service = StockService()
 stock_management_service = StockManagementService()
 setup_service = InitialSetupService()
 report_service = ReportService()
+production_service = ProductionService()
+sales_service = SalesService()
 
 # Get brand configuration
 brand_config = get_brand_config()
@@ -67,7 +71,7 @@ def display_logo():
         </div>
         """, unsafe_allow_html=True)
 
-# Custom CSS with brand colors
+# Custom CSS
 st.markdown(f"""
 <style>
     .main-header {{
@@ -96,6 +100,20 @@ st.markdown(f"""
         border-radius: 10px;
         margin: 1rem 0;
     }}
+    .sale-item {{
+        background: #f8f9fa;
+        padding: 0.5rem;
+        margin: 0.25rem 0;
+        border-radius: 5px;
+        border-left: 3px solid {brand_config['primary_color']};
+    }}
+    .product-card {{
+        background: linear-gradient(135deg, {brand_config['primary_color']}10, {brand_config['secondary_color']}10);
+        padding: 1rem;
+        border-radius: 10px;
+        margin: 0.5rem 0;
+        border-left: 4px solid {brand_config['primary_color']};
+    }}
 </style>
 """, unsafe_allow_html=True)
 
@@ -106,7 +124,7 @@ display_logo()
 st.sidebar.title("🧭 Navigation")
 page = st.sidebar.radio(
     "Pilih Menu:",
-    ["🏠 Dashboard", "💰 Transaksi", "📦 Stok", "⚡ Input Stock Awal", "📈 Laporan", "⚙️ Setup Awal"]
+    ["🏠 Dashboard", "💰 Input Manual", "📦 Stok", "🏭 Produksi", "📈 Laporan", "⚙️ Setup Awal"]
 )
 
 # Check setup status
@@ -116,11 +134,11 @@ setup_status = setup_service.get_setup_status()
 if not setup_status['finance_initialized'] and page != "⚙️ Setup Awal":
     st.warning("⚠️ Sistem belum diinisialisasi. Silakan buka **Setup Awal** terlebih dahulu.")
     if st.button("Pergi ke Setup Awal"):
-        st.experimental_set_query_params(page="Setup Awal")
+        st.rerun()
     st.stop()
 
 # Header
-st.markdown(f'<div class="main-header">👖 {brand_config["name"]} - Sistem Pembukuan & Stok</div>', unsafe_allow_html=True)
+st.markdown(f'<div class="main-header">👙 {brand_config["name"]} - Sistem Pembukuan & Stok</div>', unsafe_allow_html=True)
 
 # Dashboard Page
 if page == "🏠 Dashboard":
@@ -156,23 +174,37 @@ if page == "🏠 Dashboard":
     
     # Stock Summary
     st.subheader("📊 Ringkasan Stok")
-    stock_summary = stock_management_service.get_stock_summary()
     
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        total_raw = sum(item[1] for item in stock_summary['raw_materials'])
-        st.metric("Bahan Mentah", f"{total_raw} pack")
-    
-    with col2:
-        total_finished = sum(item[1] for item in stock_summary['finished_goods'])
-        st.metric("Barang Jadi", f"{total_finished} pcs")
-    
-    with col3:
-        st.metric("Nilai Stok Bahan", format_currency(stock_summary['total_raw_value']))
-    
-    with col4:
-        st.metric("Nilai Stok Jadi", format_currency(stock_summary['total_finished_value']))
+    try:
+        stock_summary = stock_management_service.get_stock_summary()
+        
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            total_raw = sum(item[1] for item in stock_summary['raw_materials']) if stock_summary['raw_materials'] else 0
+            st.metric("Bahan Mentah", f"{total_raw} items")
+        
+        with col2:
+            total_finished = sum(item[1] for item in stock_summary['finished_goods']) if stock_summary['finished_goods'] else 0
+            st.metric("Barang Jadi", f"{total_finished} pcs")
+        
+        with col3:
+            st.metric("Nilai Stok Bahan", format_currency(stock_summary['total_raw_value']))
+        
+        with col4:
+            st.metric("Nilai Stok Jadi", format_currency(stock_summary['total_finished_value']))
+            
+    except Exception as e:
+        st.error(f"Error loading stock summary: {e}")
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Bahan Mentah", "0 items")
+        with col2:
+            st.metric("Barang Jadi", "0 pcs")
+        with col3:
+            st.metric("Nilai Stok Bahan", "Rp 0")
+        with col4:
+            st.metric("Nilai Stok Jadi", "Rp 0")
     
     # Daily Profit
     st.subheader("💰 Profit Hari Ini")
@@ -198,143 +230,441 @@ if page == "🏠 Dashboard":
         df_recent = pd.DataFrame(recent_transactions, 
                                columns=['Jenis', 'Kategori', 'Amount', 'Qty', 'Size', 'Notes', 'Tanggal'])
         df_recent['Amount'] = df_recent['Amount'].apply(format_currency)
-        st.dataframe(df_recent.head(10), use_container_width=True)
+        st.dataframe(df_recent.head(10), width='stretch')
     else:
         st.info("Belum ada transaksi dalam 7 hari terakhir.")
 
-# Transaction Page (sama seperti sebelumnya, tetap dipertahankan)
-elif page == "💰 Transaksi":
-    st.header("💳 Input Transaksi")
+# Input Manual Page
+elif page == "💰 Input Manual":
+    st.header("💰 Input Transaksi Manual")
     
-    transaction_type = st.selectbox(
-        "Jenis Transaksi:",
-        ["Penjualan", "Pemasukan Shopee", "Bayar Penjahit", "Belanja Bahan", "Penarikan Tunai", "Biaya Lain"]
-    )
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["🛒 Penjualan", "📦 Pack Sales", "🏭 Produksi", "🛍️ Belanja Bahan", "💸 Lainnya"])
     
-    with st.form("transaction_form"):
-        if transaction_type == "Penjualan":
-            col1, col2 = st.columns(2)
-            with col1:
-                amount = st.number_input("Jumlah Pemasukan Bersih (Rp)", min_value=0, step=1000)
-                quantity = st.number_input("Jumlah Terjual (pcs)", min_value=1, step=1)
-            with col2:
-                size = st.selectbox("Ukuran", ["S", "M", "L", "XL", "XXL"])
-                notes = st.text_input("Catatan (opsional)")
-            
-        elif transaction_type == "Pemasukan Shopee":
-            amount = st.number_input("Jumlah Pemasukan Bersih Setelah Potongan (Rp)", min_value=0, step=1000)
-            quantity = None
-            size = None
-            notes = st.text_input("Catatan (opsional)")
-            
-        elif transaction_type == "Bayar Penjahit":
-            col1, col2 = st.columns(2)
-            with col1:
-                amount = st.number_input("Jumlah Bayaran (Rp)", min_value=0, step=1000)
-                quantity = st.number_input("Jumlah pcs yang diselesaikan", min_value=1, step=1)
-            with col2:
-                size = st.selectbox("Ukuran", ["S", "M", "L", "XL", "XXL"])
-                notes = st.text_input("Catatan (opsional)")
-            
-        elif transaction_type == "Belanja Bahan":
-            category = st.selectbox("Jenis Bahan", ["Waterproof", "Polar", "Spandex", "Diadora", "Lainnya"])
-            amount = st.number_input("Jumlah Pengeluaran (Rp)", min_value=0, step=1000)
-            quantity = st.number_input("Quantity Beli", min_value=1, step=1)
-            size = None
-            notes = st.text_input("Catatan (opsional)")
-            
-        elif transaction_type == "Penarikan Tunai":
-            amount = st.number_input("Jumlah Penarikan (Rp)", min_value=0, step=1000)
-            st.info(f"Biaya admin: Rp 3,000 | Total dikurangi: {format_currency(amount + 3000)}")
-            quantity = None
-            size = None
-            notes = st.text_input("Alasan penarikan (opsional)")
-            
-        else:  # Biaya Lain
-            category = st.selectbox("Jenis Biaya", ["Biaya Admin", "Biaya ATM", "Transportasi", "Lainnya"])
-            amount = st.number_input("Jumlah Pengeluaran (Rp)", min_value=0, step=1000)
-            quantity = None
-            size = None
-            notes = st.text_input("Keterangan biaya")
+    with tab1:
+        st.subheader("🛒 Penjualan Retail")
         
-        submitted = st.form_submit_button("Simpan Transaksi")
+        # Dynamic form untuk multiple items - di luar form utama
+        if 'sale_items' not in st.session_state:
+            st.session_state.sale_items = [{'product': 'Celana Dalam VPants', 'size': 'M', 'quantity': 1}]
         
-        if submitted:
-            if amount <= 0:
-                st.error("Jumlah transaksi harus lebih dari 0")
-            else:
-                # Map transaction types
-                type_mapping = {
-                    "Penjualan": "sale",
-                    "Pemasukan Shopee": "se_income", 
-                    "Bayar Penjahit": "expense",
-                    "Belanja Bahan": "purchase",
-                    "Penarikan Tunai": "withdrawal",
-                    "Biaya Lain": "expense"
-                }
-                
-                # Map categories
-                if transaction_type == "Belanja Bahan":
-                    transaction_category = f"Bahan_{category}"
-                elif transaction_type == "Biaya Lain":
-                    transaction_category = f"Biaya_{category}"
-                elif transaction_type == "Bayar Penjahit":
-                    transaction_category = "Ongkos_Jahit"
-                else:
-                    transaction_category = transaction_type.replace(" ", "_")
-                
-                transaction = Transaction(
-                    type=type_mapping[transaction_type],
-                    category=transaction_category,
-                    amount=amount,
-                    quantity=quantity,
-                    size=size,
-                    notes=notes
+        # Controls untuk manage items (di luar form)
+        col_controls, _ = st.columns([2, 1])
+        with col_controls:
+            if st.button("➕ Tambah Item", key="add_item_btn"):
+                st.session_state.sale_items.append({'product': 'Celana Dalam VPants', 'size': 'M', 'quantity': 1})
+                st.rerun()
+        
+        # Tampilkan items saat ini
+        st.write("**Item yang Dijual:**")
+        for i, item in enumerate(st.session_state.sale_items):
+            col1, col2, col3, col4 = st.columns([3, 2, 2, 1])
+            with col1:
+                product = st.selectbox(
+                    f"Produk {i+1}",
+                    ['Celana Dalam VPants', 'Celana Pembalut VPants', 'Celana Dalam Premium'],
+                    index=0 if item['product'] == 'Celana Dalam VPants' else 1 if item['product'] == 'Celana Pembalut VPants' else 2,
+                    key=f"product_{i}"
                 )
-                
+            with col2:
+                size = st.selectbox(
+                    f"Ukuran {i+1}",
+                    ['S', 'M', 'L', 'XL', 'XXL'],
+                    index=['S', 'M', 'L', 'XL', 'XXL'].index(item['size']),
+                    key=f"size_{i}"
+                )
+            with col3:
+                quantity = st.number_input(
+                    f"Qty {i+1}",
+                    min_value=1,
+                    value=item['quantity'],
+                    key=f"qty_{i}"
+                )
+            with col4:
+                if i > 0:
+                    if st.button("❌", key=f"remove_{i}"):
+                        st.session_state.sale_items.pop(i)
+                        st.rerun()
+            
+            # Update session state
+            st.session_state.sale_items[i] = {'product': product, 'size': size, 'quantity': quantity}
+        
+        # Bonus items untuk pembelian banyak
+        total_qty = sum(item['quantity'] for item in st.session_state.sale_items)
+        if total_qty >= 5:
+            st.success(f"🎉 Pembelian {total_qty} pcs dapat bonus!")
+            bonus_item = st.checkbox("Tambahkan bonus 1 pcs (size M)", key="bonus_checkbox")
+        else:
+            bonus_item = False
+        
+        # Form untuk input transaksi
+        with st.form("retail_sale_form"):
+            col1, col2 = st.columns(2)
+            with col1:
+                discount = st.number_input("Diskon (%)", min_value=0, max_value=100, value=0, key="discount_input")
+                payment_method = st.selectbox("Metode Bayar", ["Cash", "Transfer", "Shopee", "Tokopedia"], key="payment_method")
+            with col2:
+                customer_notes = st.text_input("Catatan Pelanggan", key="customer_notes")
+                admin_fee = st.number_input("Biaya Admin", min_value=0, value=0, key="admin_fee")
+            
+            # Calculate total (harga berbeda untuk tipe produk)
+            price_per_piece = 75000  # Harga default untuk celana dalam biasa
+            if any('Pembalut' in item['product'] for item in st.session_state.sale_items):
+                price_per_piece = 85000  # Harga untuk celana pembalut
+            elif any('Premium' in item['product'] for item in st.session_state.sale_items):
+                price_per_piece = 95000  # Harga untuk premium
+            
+            estimated_total = total_qty * price_per_piece
+            final_total = estimated_total * (1 - discount/100) - admin_fee
+            
+            st.info(f"**Total Estimasi:** {format_currency(estimated_total)} | "
+                   f"**Setelah Diskon {discount}%:** {format_currency(estimated_total * (1 - discount/100))} | "
+                   f"**Final:** {format_currency(final_total)}")
+            
+            submitted = st.form_submit_button("💾 Simpan Penjualan")
+            
+            if submitted:
                 try:
-                    new_balance = finance_service.update_balance(transaction)
-                    
-                    # Update stock for relevant transactions
-                    if transaction_type == "Bayar Penjahit":
-                        # Add finished goods to stock
-                        stock_item = StockItem(
-                            item_type="finished",
-                            item_name="Celana VPants",
-                            quantity=quantity,
-                            size=size
+                    # Process each sale item
+                    for item in st.session_state.sale_items:
+                        transaction = Transaction(
+                            type='sale',
+                            category='retail_sale',
+                            amount=final_total / len(st.session_state.sale_items),  # Split amount
+                            quantity=item['quantity'],
+                            size=item['size'],
+                            notes=f"Penjualan {item['product']} {item['size']} - {customer_notes}"
                         )
-                        stock_service.update_stock(stock_item)
-                        st.success(f"✅ Berhasil bayar penjahit dan tambah stok {quantity} pcs size {size}")
                         
-                    elif transaction_type == "Belanja Bahan":
-                        # Add raw materials to stock
+                        # Update balance
+                        finance_service.update_balance(transaction)
+                        
+                        # Update stock
                         stock_item = StockItem(
-                            item_type="raw", 
-                            item_name=category,
-                            quantity=quantity,
-                            size=None
+                            item_type='finished',
+                            item_name=item['product'],
+                            quantity=-item['quantity'],
+                            size=item['size']
                         )
                         stock_service.update_stock(stock_item)
-                        st.success(f"✅ Berhasil belanja {category} dan tambah stok {quantity} pack")
                     
-                    elif transaction_type == "Penjualan":
-                        # Reduce finished goods stock
-                        stock_item = StockItem(
-                            item_type="finished",
-                            item_name="Celana VPants", 
-                            quantity=-quantity,  # Negative to reduce
-                            size=size
+                    # Add bonus item if applicable
+                    if total_qty >= 5 and bonus_item:
+                        bonus_transaction = Transaction(
+                            type='sale',
+                            category='bonus',
+                            amount=0,
+                            quantity=1,
+                            size='M',
+                            notes="Bonus untuk pembelian 5+ pcs"
                         )
-                        stock_service.update_stock(stock_item)
-                        st.success(f"✅ Penjualan {quantity} pcs size {size} dicatat")
+                        finance_service.update_balance(bonus_transaction)
+                        
+                        bonus_stock = StockItem(
+                            item_type='finished',
+                            item_name='Celana Dalam VPants',
+                            quantity=-1,
+                            size='M'
+                        )
+                        stock_service.update_stock(bonus_stock)
                     
-                    st.success(f"✅ Transaksi berhasil disimpan! Saldo baru: {format_currency(new_balance)}")
+                    st.success(f"✅ Penjualan {total_qty} pcs berhasil dicatat!")
+                    st.session_state.sale_items = [{'product': 'Celana Dalam VPants', 'size': 'M', 'quantity': 1}]
                     
                 except Exception as e:
                     st.error(f"❌ Error: {str(e)}")
+    
+    with tab2:
+        st.subheader("📦 Pack Sales")
+        
+        with st.form("pack_sale_form"):
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                pack_type = st.selectbox(
+                    "Jenis Pack",
+                    ["Pack 3 pcs", "Pack 5 pcs", "Pack 10 pcs", "Custom Pack"]
+                )
+                
+                if pack_type == "Pack 3 pcs":
+                    pack_price = 200000  # 3 x 75000 = 225000, diskon jadi 200000
+                    pack_qty = 3
+                elif pack_type == "Pack 5 pcs":
+                    pack_price = 300000  # 5 x 75000 = 375000, diskon jadi 300000
+                    pack_qty = 5
+                elif pack_type == "Pack 10 pcs":
+                    pack_price = 550000  # 10 x 75000 = 750000, diskon jadi 550000
+                    pack_qty = 10
+                else:
+                    pack_qty = st.number_input("Jumlah pcs dalam pack", min_value=2, value=3)
+                    pack_price = st.number_input("Harga Pack", min_value=0, value=75000 * pack_qty)
+                
+                st.write(f"**Harga per pcs:** {format_currency(pack_price / pack_qty)}")
+            
+            with col2:
+                st.write("**Komposisi Pack:**")
+                sizes = ['S', 'M', 'L', 'XL', 'XXL']
+                size_distribution = {}
+                
+                for size in sizes:
+                    size_distribution[size] = st.number_input(
+                        f"Qty Size {size}",
+                        min_value=0,
+                        max_value=pack_qty,
+                        value=0,
+                        key=f"pack_{size}"
+                    )
+                
+                total_distributed = sum(size_distribution.values())
+                if total_distributed != pack_qty:
+                    st.warning(f"Total distribusi: {total_distributed} pcs (harus {pack_qty} pcs)")
+            
+            customer_notes = st.text_input("Catatan Pack")
+            discount = st.number_input("Diskon Pack (%)", min_value=0, max_value=100, value=0)
+            
+            final_pack_price = pack_price * (1 - discount/100)
+            st.info(f"**Harga Pack:** {format_currency(pack_price)} → **Final:** {format_currency(final_pack_price)}")
+            
+            submitted = st.form_submit_button("💾 Simpan Pack Sale")
+            
+            if submitted:
+                if total_distributed != pack_qty:
+                    st.error(f"Total distribusi size harus {pack_qty} pcs!")
+                else:
+                    try:
+                        # Record pack sale transaction
+                        transaction = Transaction(
+                            type='sale',
+                            category='pack_sale',
+                            amount=final_pack_price,
+                            quantity=pack_qty,
+                            size='MIXED',
+                            notes=f"Pack {pack_type} - {customer_notes}"
+                        )
+                        
+                        new_balance = finance_service.update_balance(transaction)
+                        
+                        # Update stock for each size
+                        for size, qty in size_distribution.items():
+                            if qty > 0:
+                                stock_item = StockItem(
+                                    item_type='finished',
+                                    item_name='Celana Dalam VPants',
+                                    quantity=-qty,
+                                    size=size
+                                )
+                                stock_service.update_stock(stock_item)
+                        
+                        st.success(f"✅ Pack {pack_type} ({pack_qty} pcs) berhasil dijual!")
+                        st.success(f"💰 Saldo baru: {format_currency(new_balance)}")
+                        
+                    except Exception as e:
+                        st.error(f"❌ Error: {str(e)}")
+    
+    with tab3:
+        st.subheader("🏭 Input Produksi")
+        
+        with st.form("production_form"):
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                product_name = st.selectbox(
+                    "Produk yang Diproduksi",
+                    ['Celana Dalam VPants', 'Celana Pembalut VPants', 'Celana Dalam Premium']
+                )
+                size = st.selectbox("Ukuran", ['S', 'M', 'L', 'XL', 'XXL'])
+                quantity = st.number_input("Jumlah Produksi", min_value=1, value=10)
+                labor_cost = st.number_input("Ongkos Jahit Total", min_value=0, value=120000)
+            
+            with col2:
+                st.write("**Bahan yang Digunakan:**")
+                
+                # Get available materials
+                materials = production_service.get_raw_materials()
+                materials_used = []
+                
+                for material in materials:
+                    material_id, name, unit, cost = material
+                    qty_used = st.number_input(
+                        f"{name} ({unit})",
+                        min_value=0.0,
+                        value=0.0,
+                        step=0.1,
+                        key=f"mat_{material_id}"
+                    )
+                    if qty_used > 0:
+                        materials_used.append({
+                            'material_id': material_id,
+                            'quantity': qty_used,
+                            'name': name,
+                            'unit': unit
+                        })
+            
+            production_notes = st.text_input("Catatan Produksi")
+            
+            # Calculate estimated cost
+            materials_cost = sum(mat['quantity'] * next((m[3] for m in materials if m[0] == mat['material_id']), 0) 
+                               for mat in materials_used)
+            total_cost = labor_cost + materials_cost
+            
+            st.info(f"**Estimasi Biaya:** Bahan {format_currency(materials_cost)} + "
+                   f"Ongkos {format_currency(labor_cost)} = {format_currency(total_cost)}")
+            
+            submitted = st.form_submit_button("🏭 Simpan Produksi")
+            
+            if submitted:
+                try:
+                    # Record production
+                    production_service.record_production(
+                        product_name=product_name,
+                        size=size,
+                        quantity=quantity,
+                        labor_cost=labor_cost,
+                        materials_used=materials_used,
+                        notes=production_notes
+                    )
+                    
+                    st.success(f"✅ Produksi {quantity} pcs {product_name} {size} berhasil dicatat!")
+                    
+                except Exception as e:
+                    st.error(f"❌ Error: {str(e)}")
+    
+    with tab4:
+        st.subheader("🛍️ Belanja Bahan Mentah")
+        
+        with st.form("material_purchase_form"):
+            materials = production_service.get_raw_materials()
+            
+            col1, col2, col3 = st.columns(3)
+            
+            purchased_items = []
+            for i, material in enumerate(materials):
+                material_id, name, unit, cost = material
+                
+                if i % 3 == 0:
+                    current_col = col1
+                elif i % 3 == 1:
+                    current_col = col2
+                else:
+                    current_col = col3
+                
+                with current_col:
+                    st.write(f"**{name}**")
+                    purchase_qty = st.number_input(
+                        f"Qty ({unit})",
+                        min_value=0.0,
+                        value=0.0,
+                        step=0.1,
+                        key=f"purchase_{material_id}"
+                    )
+                    purchase_price = st.number_input(
+                        f"Harga Total",
+                        min_value=0,
+                        value=0,
+                        key=f"price_{material_id}"
+                    )
+                    
+                    if purchase_qty > 0:
+                        purchased_items.append({
+                            'material_id': material_id,
+                            'name': name,
+                            'quantity': purchase_qty,
+                            'unit': unit,
+                            'price': purchase_price
+                        })
+            
+            purchase_notes = st.text_input("Catatan Pembelian")
+            total_purchase = sum(item['price'] for item in purchased_items)
+            
+            st.info(f"**Total Pembelian:** {format_currency(total_purchase)}")
+            
+            submitted = st.form_submit_button("🛍️ Simpan Pembelian")
+            
+            if submitted:
+                if not purchased_items:
+                    st.error("Pilih minimal 1 bahan yang dibeli!")
+                else:
+                    try:
+                        for item in purchased_items:
+                            # Record transaction
+                            transaction = Transaction(
+                                type='purchase',
+                                category='material_purchase',
+                                amount=item['price'],
+                                quantity=item['quantity'],
+                                unit=item['unit'],
+                                notes=f"Beli {item['name']} - {purchase_notes}"
+                            )
+                            
+                            finance_service.update_balance(transaction)
+                            
+                            # Update stock
+                            stock_item = StockItem(
+                                item_type='material',
+                                item_name=item['name'],
+                                quantity=item['quantity'],
+                                unit=item['unit']
+                            )
+                            stock_service.update_stock(stock_item)
+                        
+                        st.success(f"✅ Pembelian {len(purchased_items)} bahan berhasil dicatat!")
+                        
+                    except Exception as e:
+                        st.error(f"❌ Error: {str(e)}")
+    
+    with tab5:
+        st.subheader("💸 Transaksi Lainnya")
+        
+        transaction_type = st.selectbox(
+            "Jenis Transaksi:",
+            ["Pemasukan Shopee", "Penarikan Tunai", "Biaya Admin", "Biaya Lain"]
+        )
+        
+        with st.form("other_transaction_form"):
+            if transaction_type == "Pemasukan Shopee":
+                amount = st.number_input("Jumlah Pemasukan Bersih (Rp)", min_value=0, step=1000)
+                notes = st.text_input("Catatan (opsional)")
+                
+            elif transaction_type == "Penarikan Tunai":
+                amount = st.number_input("Jumlah Penarikan (Rp)", min_value=0, step=1000)
+                st.info(f"Biaya admin: Rp 3,000 | Total dikurangi: {format_currency(amount + 3000)}")
+                notes = st.text_input("Alasan penarikan (opsional)")
+                
+            else:  # Biaya Admin/Lain
+                category = st.selectbox("Jenis Biaya", ["Biaya Admin", "Biaya ATM", "Transportasi", "Lainnya"])
+                amount = st.number_input("Jumlah Pengeluaran (Rp)", min_value=0, step=1000)
+                notes = st.text_input("Keterangan biaya")
+            
+            submitted = st.form_submit_button("💾 Simpan Transaksi")
+            
+            if submitted:
+                if amount <= 0:
+                    st.error("Jumlah transaksi harus lebih dari 0")
+                else:
+                    # Map transaction types
+                    type_mapping = {
+                        "Pemasukan Shopee": "se_income", 
+                        "Penarikan Tunai": "withdrawal",
+                        "Biaya Admin": "expense",
+                        "Biaya Lain": "expense"
+                    }
+                    
+                    transaction_category = transaction_type.replace(" ", "_")
+                    
+                    transaction = Transaction(
+                        type=type_mapping[transaction_type],
+                        category=transaction_category,
+                        amount=amount,
+                        notes=notes
+                    )
+                    
+                    try:
+                        new_balance = finance_service.update_balance(transaction)
+                        st.success(f"✅ Transaksi berhasil disimpan! Saldo baru: {format_currency(new_balance)}")
+                        
+                    except Exception as e:
+                        st.error(f"❌ Error: {str(e)}")
 
-# Stock Page - Diperbarui dengan modul baru
+# Stock Page
 elif page == "📦 Stok":
     st.header("📊 Management Stok")
     
@@ -348,28 +678,20 @@ elif page == "📦 Stok":
         col1, col2 = st.columns(2)
         
         with col1:
-            st.write("**📦 Bahan Mentah**")
+            st.write("**📦 Bahan Mentah & Material**")
             if stock_summary['raw_materials']:
                 df_raw = pd.DataFrame(stock_summary['raw_materials'], columns=['Bahan', 'Quantity'])
-                st.dataframe(df_raw, use_container_width=True)
+                st.dataframe(df_raw, width='stretch')
             else:
                 st.info("Belum ada stok bahan mentah")
         
         with col2:
-            st.write("**👖 Barang Jadi (per Ukuran)**")
+            st.write("**👙 Barang Jadi (per Ukuran)**")
             if stock_summary['finished_goods']:
                 df_finished = pd.DataFrame(stock_summary['finished_goods'], columns=['Ukuran', 'Quantity'])
-                st.dataframe(df_finished, use_container_width=True)
+                st.dataframe(df_finished, width='stretch')
             else:
                 st.info("Belum ada stok barang jadi")
-        
-        # Stock Value
-        st.subheader("💰 Nilai Stok Estimasi")
-        col1, col2 = st.columns(2)
-        with col1:
-            st.metric("Total Nilai Bahan Mentah", format_currency(stock_summary['total_raw_value']))
-        with col2:
-            st.metric("Total Nilai Barang Jadi", format_currency(stock_summary['total_finished_value']))
         
         # Low stock alert
         st.subheader("🚨 Alert Stok Menipis")
@@ -387,23 +709,25 @@ elif page == "📦 Stok":
         with st.form("manual_stock_form"):
             col1, col2 = st.columns(2)
             with col1:
-                item_type = st.selectbox("Jenis Item", ["Bahan Mentah", "Barang Jadi"])
+                item_type = st.selectbox("Jenis Item", ["Bahan Mentah", "Barang Jadi", "Material"])
                 item_name = st.text_input("Nama Item")
             with col2:
                 if item_type == "Barang Jadi":
-                    size = st.selectbox("Ukuran", ["S", "M", "L", "XL", "XXL"])
+                    size = st.selectbox("Ukuran", ["S", 'M', 'L', 'XL', 'XXL'])
                 else:
                     size = None
                 quantity = st.number_input("Quantity (+/- untuk tambah/kurang)", step=1)
             
             notes = st.text_input("Alasan update (opsional)")
             
-            submitted = st.form_submit_button("Update Stok")
+            submitted = st.form_submit_button("pdate Stok")
             
             if submitted:
                 try:
+                    stock_type = "raw" if item_type == "Bahan Mentah" else "finished" if item_type == "Barang Jadi" else "material"
+                    
                     stock_management_service.adjust_stock(
-                        item_type="raw" if item_type == "Bahan Mentah" else "finished",
+                        item_type=stock_type,
                         item_name=item_name,
                         adjustment=quantity,
                         size=size,
@@ -422,109 +746,56 @@ elif page == "📦 Stok":
         if stock_history:
             df_history = pd.DataFrame(stock_history, 
                                     columns=['Jenis', 'Kategori', 'Quantity', 'Notes', 'Tanggal'])
-            st.dataframe(df_history, use_container_width=True)
+            st.dataframe(df_history, width='stretch')
         else:
             st.info("Belum ada perubahan stok dalam periode ini")
 
-# New Page: Initial Stock Input
-elif page == "⚡ Input Stock Awal":
-    st.header("⚡ Input Saldo Stock Awal")
+# Produksi Page
+elif page == "🏭 Produksi":
+    st.header("🏭 Manajemen Produksi")
     
-    st.warning("""
-    **Perhatian:** Hanya gunakan menu ini untuk pertama kali setup atau reset stock.
-    Perubahan akan langsung mempengaruhi database.
-    """)
-    
-    tab1, tab2 = st.tabs(["Input Bahan Mentah", "Input Barang Jadi"])
+    tab1, tab2 = st.tabs(["Riwayat Produksi", "Bahan Mentah"])
     
     with tab1:
-        st.subheader("📦 Input Stock Bahan Mentah Awal")
+        st.subheader("📋 Riwayat Produksi")
         
-        with st.form("initial_raw_stock"):
-            st.write("**Bahan Baku:**")
+        production_history = production_service.get_production_history(30)
+        
+        if production_history:
+            df_production = pd.DataFrame(production_history, 
+                                       columns=['Produk', 'Size', 'Qty', 'Ongkos', 'Bahan', 'Total', 'Notes', 'Tanggal'])
+            df_production['Ongkos'] = df_production['Ongkos'].apply(format_currency)
+            df_production['Bahan'] = df_production['Bahan'].apply(format_currency)
+            df_production['Total'] = df_production['Total'].apply(format_currency)
+            
+            st.dataframe(df_production, width='stretch')
+            
+            # Production summary
+            total_produced = df_production['Qty'].sum()
+            total_cost = df_production['Total'].astype(str).str.replace('Rp ', '').str.replace('.', '').astype(float).sum()
             
             col1, col2 = st.columns(2)
-            
             with col1:
-                waterproof_qty = st.number_input("Waterproof (pack)", min_value=0, value=0)
-                polar_qty = st.number_input("Polar (pack)", min_value=0, value=0)
-            
+                st.metric("Total Produksi (30 hari)", f"{total_produced} pcs")
             with col2:
-                spandex_qty = st.number_input("Spandex (pack)", min_value=0, value=0)
-                diadora_qty = st.number_input("Diadora (pack)", min_value=0, value=0)
-                other_qty = st.number_input("Lainnya (pack)", min_value=0, value=0)
-                other_name = st.text_input("Nama bahan lainnya")
-            
-            submitted = st.form_submit_button("Simpan Stock Bahan Mentah")
-            
-            if submitted:
-                raw_items = []
-                
-                if waterproof_qty > 0:
-                    raw_items.append(StockItem("raw", "Waterproof", waterproof_qty))
-                if polar_qty > 0:
-                    raw_items.append(StockItem("raw", "Polar", polar_qty))
-                if spandex_qty > 0:
-                    raw_items.append(StockItem("raw", "Spandex", spandex_qty))
-                if diadora_qty > 0:
-                    raw_items.append(StockItem("raw", "Diadora", diadora_qty))
-                if other_qty > 0 and other_name:
-                    raw_items.append(StockItem("raw", other_name, other_qty))
-                
-                if raw_items:
-                    try:
-                        stock_management_service.initialize_stock(raw_items)
-                        st.success(f"✅ Berhasil menyimpan {len(raw_items)} jenis bahan mentah!")
-                    except Exception as e:
-                        st.error(f"❌ Error: {str(e)}")
-                else:
-                    st.warning("Tidak ada bahan yang diinput")
+                st.metric("Total Biaya Produksi", format_currency(total_cost))
+        else:
+            st.info("Belum ada data produksi dalam 30 hari terakhir")
     
     with tab2:
-        st.subheader("👖 Input Stock Barang Jadi Awal")
+        st.subheader("📦 Bahan Mentah Tersedia")
         
-        with st.form("initial_finished_stock"):
-            st.write("**Stock Awal per Ukuran:**")
+        materials = production_service.get_raw_materials()
+        
+        if materials:
+            df_materials = pd.DataFrame(materials, columns=['ID', 'Nama', 'Unit', 'Harga/Unit'])
+            df_materials['Harga/Unit'] = df_materials['Harga/Unit'].apply(format_currency)
             
-            col1, col2, col3, col4, col5 = st.columns(5)
-            
-            with col1:
-                size_s = st.number_input("Size S (pcs)", min_value=0, value=0)
-            with col2:
-                size_m = st.number_input("Size M (pcs)", min_value=0, value=0)
-            with col3:
-                size_l = st.number_input("Size L (pcs)", min_value=0, value=0)
-            with col4:
-                size_xl = st.number_input("Size XL (pcs)", min_value=0, value=0)
-            with col5:
-                size_xxl = st.number_input("Size XXL (pcs)", min_value=0, value=0)
-            
-            submitted = st.form_submit_button("Simpan Stock Barang Jadi")
-            
-            if submitted:
-                finished_items = []
-                
-                if size_s > 0:
-                    finished_items.append(StockItem("finished", "Celana VPants", size_s, "S"))
-                if size_m > 0:
-                    finished_items.append(StockItem("finished", "Celana VPants", size_m, "M"))
-                if size_l > 0:
-                    finished_items.append(StockItem("finished", "Celana VPants", size_l, "L"))
-                if size_xl > 0:
-                    finished_items.append(StockItem("finished", "Celana VPants", size_xl, "XL"))
-                if size_xxl > 0:
-                    finished_items.append(StockItem("finished", "Celana VPants", size_xxl, "XXL"))
-                
-                if finished_items:
-                    try:
-                        stock_management_service.initialize_stock(finished_items)
-                        st.success(f"✅ Berhasil menyimpan stock {sum(item.quantity for item in finished_items)} pcs barang jadi!")
-                    except Exception as e:
-                        st.error(f"❌ Error: {str(e)}")
-                else:
-                    st.warning("Tidak ada barang jadi yang diinput")
+            st.dataframe(df_materials, width='stretch')
+        else:
+            st.info("Tidak ada data bahan mentah")
 
-# Laporan Page (tetap sama)
+# Laporan Page
 elif page == "📈 Laporan":
     st.header("📊 Laporan Keuangan")
     
@@ -564,7 +835,7 @@ elif page == "📈 Laporan":
                 df_monthly = pd.DataFrame(monthly_report['transactions'], 
                                         columns=['Jenis', 'Jumlah Transaksi', 'Total Amount'])
                 df_monthly['Total Amount'] = df_monthly['Total Amount'].apply(format_currency)
-                st.dataframe(df_monthly, use_container_width=True)
+                st.dataframe(df_monthly, width='stretch')
             else:
                 st.info("Tidak ada transaksi untuk periode ini")
     
@@ -593,7 +864,7 @@ elif page == "📈 Laporan":
             if filter_category != "Semua":
                 filtered_df = filtered_df[filtered_df['Kategori'] == filter_category]
             
-            st.dataframe(filtered_df, use_container_width=True)
+            st.dataframe(filtered_df, width='stretch')
             
             # Export option
             if st.button("📥 Export ke CSV"):
@@ -607,7 +878,7 @@ elif page == "📈 Laporan":
         else:
             st.info(f"Tidak ada transaksi dalam {days} hari terakhir")
 
-# Setup Awal Page
+# Setup Awal Page - FIXED
 elif page == "⚙️ Setup Awal":
     st.header("⚙️ Setup Awal Sistem")
     
@@ -645,7 +916,7 @@ elif page == "⚙️ Setup Awal":
             except Exception as e:
                 st.error(f"❌ Error: {str(e)}")
     
-    with col3:
+    with col3:  # FIXED: ini col3, bukan tab3
         st.subheader("📊 Status Sistem")
         st.write(f"Saldo: {'✅' if setup_status['finance_initialized'] else '❌'}")
         st.write(f"Produk: {'✅' if setup_status['products_initialized'] else '❌'}")
@@ -662,7 +933,7 @@ st.sidebar.markdown(f"""
 <div class="brand-section">
     <p style="font-size: 0.8rem; text-align: center;">
         <strong>{brand_config['name']} System</strong><br>
-        v1.0 - {brand_config['slogan']}<br>
+        v2.0 - {brand_config['slogan']}<br>
         {brand_config['contact']}
     </p>
 </div>
