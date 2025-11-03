@@ -10,19 +10,16 @@ def get_connection():
     return sqlite3.connect(DB_PATH)
 
 def init_database():
-    """Initialize database tables dengan schema baru"""
+    """Initialize database tables dengan schema sederhana"""
     conn = get_connection()
     cursor = conn.cursor()
     
     # Drop existing tables
-    cursor.execute('DROP TABLE IF EXISTS transactions')
-    cursor.execute('DROP TABLE IF EXISTS stock')
-    cursor.execute('DROP TABLE IF EXISTS products')
-    cursor.execute('DROP TABLE IF EXISTS raw_materials')
-    cursor.execute('DROP TABLE IF EXISTS production_batches')
-    cursor.execute('DROP TABLE IF EXISTS finance')
+    tables = ['transactions', 'stock', 'products', 'raw_materials', 'production_batches', 'finance']
+    for table in tables:
+        cursor.execute(f'DROP TABLE IF EXISTS {table}')
     
-    # Products table
+    # Products table - simplified
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS products (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -35,17 +32,6 @@ def init_database():
         )
     ''')
     
-    # Raw Materials table
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS raw_materials (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            unit TEXT NOT NULL,
-            cost_per_unit DECIMAL(10,2) NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    
     # Transactions table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS transactions (
@@ -53,7 +39,7 @@ def init_database():
             type TEXT NOT NULL CHECK(type IN (
                 'sale', 'purchase', 'expense', 'withdrawal', 
                 'se_income', 'stock_adjustment', 'initial_balance',
-                'production', 'material_purchase'
+                'production', 'packing'
             )),
             category TEXT NOT NULL,
             amount DECIMAL(10,2) NOT NULL,
@@ -66,15 +52,14 @@ def init_database():
         )
     ''')
     
-    # Stock table
+    # Stock table - simplified
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS stock (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            item_type TEXT NOT NULL CHECK(item_type IN ('raw', 'finished', 'material')),
+            item_type TEXT NOT NULL CHECK(item_type IN ('material', 'finished')),
             item_name TEXT NOT NULL,
             size TEXT,
-            unit TEXT,
-            quantity DECIMAL(10,3) NOT NULL,
+            quantity INTEGER NOT NULL,
             last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
@@ -111,49 +96,48 @@ def init_database():
         VALUES (0, 0, 0)
     ''')
     
-    # Insert default raw materials
-    default_materials = [
-        ('Kain Waterproof', 'meter', 25000),
-        ('Kain Polar', 'meter', 18000),
-        ('Kain Spandex', 'meter', 22000),
-        ('Kain Diadora', 'meter', 20000),
-        ('Karet Elastis', 'kg', 45000),
-        ('Benang', 'roll', 15000),
-        ('Resleting', 'pcs', 5000),
-        ('Kancing', 'pcs', 200)
-    ]
-    
-    cursor.executemany('''
-        INSERT INTO raw_materials (name, unit, cost_per_unit)
-        VALUES (?, ?, ?)
-    ''', default_materials)
-    
-    # Insert default products - UPDATED untuk celana dalam wanita
-    default_products = [
+    # Insert simple products
+    simple_products = [
+        # Celana Dalam
         ('Celana Dalam VPants', 'S', 75000, 35000, 1),
         ('Celana Dalam VPants', 'M', 75000, 35000, 1),
         ('Celana Dalam VPants', 'L', 75000, 35000, 1),
         ('Celana Dalam VPants', 'XL', 80000, 38000, 1),
-        ('Celana Dalam VPants', 'XXL', 80000, 38000, 1),
+        
+        # Celana Pembalut
         ('Celana Pembalut VPants', 'S', 85000, 40000, 1),
         ('Celana Pembalut VPants', 'M', 85000, 40000, 1),
         ('Celana Pembalut VPants', 'L', 85000, 40000, 1),
-        ('Celana Dalam Premium', 'S', 95000, 45000, 1),
-        ('Celana Dalam Premium', 'M', 95000, 45000, 1),
-        ('Celana Dalam Premium', 'L', 95000, 45000, 1),
-        ('Paket Celana Dalam', 'MIXED', 200000, 105000, 3),
-        ('Paket Celana Dalam', 'MIXED', 300000, 175000, 5),
-        ('Paket Celana Dalam', 'MIXED', 550000, 350000, 10),
+        
+        # Packed products
+        ('Celana Dalam Pack 3pcs', 'PACKED', 200000, 105000, 3),
+        ('Celana Dalam Pack 5pcs', 'PACKED', 300000, 175000, 5),
+        ('Celana Dalam Pack 10pcs', 'PACKED', 550000, 350000, 10),
     ]
     
     cursor.executemany('''
         INSERT INTO products (name, size, selling_price, cost_per_piece, pieces_per_pack)
         VALUES (?, ?, ?, ?, ?)
-    ''', default_products)
+    ''', simple_products)
+    
+    # Insert initial materials
+    initial_materials = [
+        ('material', 'Kain Siap Jahit', 'S', 100),
+        ('material', 'Kain Siap Jahit', 'M', 100),
+        ('material', 'Kain Siap Jahit', 'L', 100),
+        ('material', 'Karet Elastis', None, 50),
+        ('material', 'Benang', None, 20),
+        ('material', 'Kemasan', None, 200),
+    ]
+    
+    cursor.executemany('''
+        INSERT INTO stock (item_type, item_name, size, quantity)
+        VALUES (?, ?, ?, ?)
+    ''', initial_materials)
     
     conn.commit()
     conn.close()
-    print("✅ Database reinitialized dengan produk celana dalam wanita!")
+    print("✅ Database initialized dengan sistem sederhana!")
 
 if __name__ == "__main__":
     init_database()

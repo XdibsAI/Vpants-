@@ -1,7 +1,10 @@
+"""
+Report service for VPants
+"""
 import sqlite3
 from datetime import datetime, timedelta
 from config.database import get_connection
-from utils.helpers import safe_float
+from utils.helpers import format_currency
 
 class ReportService:
     def __init__(self):
@@ -16,7 +19,7 @@ class ReportService:
         
         cursor = self.conn.cursor()
         
-        # Get daily income (sales + shopee income)
+        # Get daily income
         cursor.execute('''
             SELECT COALESCE(SUM(amount), 0) 
             FROM transactions 
@@ -24,19 +27,19 @@ class ReportService:
             AND DATE(created_at) = ?
         ''', (date_str,))
         
-        daily_income = safe_float(cursor.fetchone()[0])
+        daily_income = cursor.fetchone()[0] or 0
         
-        # Get daily expenses (purchases + expenses + withdrawals)
+        # Get daily expenses
         cursor.execute('''
             SELECT COALESCE(SUM(amount), 0) 
             FROM transactions 
-            WHERE type IN ('purchase', 'expense') 
+            WHERE type IN ('purchase', 'expense', 'production', 'packing') 
             AND DATE(created_at) = ?
         ''', (date_str,))
         
-        daily_expenses = safe_float(cursor.fetchone()[0])
+        daily_expenses = cursor.fetchone()[0] or 0
         
-        # Add withdrawal fees (Rp 3,000 per withdrawal)
+        # Add withdrawal fees
         cursor.execute('''
             SELECT COUNT(*) 
             FROM transactions 
@@ -50,7 +53,7 @@ class ReportService:
         total_expenses = daily_expenses + withdrawal_fees
         daily_profit = daily_income - total_expenses
         
-        # Count total transactions
+        # Count total transactions for the day
         cursor.execute('''
             SELECT COUNT(*) 
             FROM transactions 
@@ -67,36 +70,72 @@ class ReportService:
             'transaction_count': transaction_count
         }
     
-    def get_monthly_report(self, year: int = None, month: int = None):
-        """Generate monthly report"""
-        if year is None:
-            year = datetime.now().year
-        if month is None:
-            month = datetime.now().month
-        
+    def get_sales_report(self, days: int = 30):
+        """Get sales report"""
         cursor = self.conn.cursor()
         
-        # Monthly summary
+        start_date = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
+        
         cursor.execute('''
             SELECT 
-                type,
+                strftime('%Y-%m-%d', created_at) as sale_date,
                 COUNT(*) as transaction_count,
-                COALESCE(SUM(amount), 0) as total_amount
+                SUM(amount) as total_sales,
+                SUM(quantity) as total_quantity
             FROM transactions 
-            WHERE strftime('%Y-%m', created_at) = ?
-            GROUP BY type
-        ''', (f"{year:04d}-{month:02d}",))
+            WHERE type = 'sale' 
+            AND DATE(created_at) >= ?
+            GROUP BY sale_date
+            ORDER BY sale_date DESC
+        ''', (start_date,))
         
-        monthly_data = cursor.fetchall() or []
-        
-        return {
-            'year': year,
-            'month': month,
-            'transactions': monthly_data
-        }
+        return cursor.fetchall()
     
-    def get_transaction_history(self, days: int = 30):
-        """Get transaction history for specified days"""
+    def get_stock_report(self):
+        """Get stock report"""
+        cursor = self.conn.cursor()
+        
+        cursor.execute('''
+            SELECT item_type, item_name, size, quantity,
+                   CASE 
+                       WHEN quantity <= 10 THEN 'LOW'
+                       WHEN quantity <= 25 THEN 'MEDIUM' 
+                       ELSE 'HIGH'
+                   END as stock_level
+            FROM stock
+            ORDER BY item_type, item_name, size
+        ''')
+        
+        return cursor.fetchall()
+    
+    def get_financial_summary(self):
+        """Get financial summary"""
+        cursor = self.conn.cursor()
+        
+        cursor.execute('''
+            SELECT 
+                current_balance,
+                total_income,
+                total_expenses,
+                (SELECT COUNT(*) FROM transactions WHERE type IN ('sale', 'se_income')) as income_count,
+                (SELECT COUNT(*) FROM transactions WHERE type IN ('purchase', 'expense', 'withdrawal', 'production', 'packing')) as expense_count
+            FROM finance 
+            ORDER BY last_updated DESC LIMIT 1
+        ''')
+        
+        result = cursor.fetchone()
+        if result:
+            return {
+                'current_balance': result[0] or 0,
+                'total_income': result[1] or 0,
+                'total_expenses': result[2] or 0,
+                'income_transactions': result[3] or 0,
+                'expense_transactions': result[4] or 0
+            }
+        return None
+    
+    def get_recent_transactions(self, days: int = 7):
+        """Get recent transactions for dashboard"""
         cursor = self.conn.cursor()
         
         start_date = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
@@ -106,6 +145,11 @@ class ReportService:
             FROM transactions 
             WHERE DATE(created_at) >= ?
             ORDER BY created_at DESC
+            LIMIT 10
         ''', (start_date,))
         
-        return cursor.fetchall() or []
+        return cursor.fetchall()
+    
+    def get_transaction_history(self, days: int = 7):
+        """Alias for get_recent_transactions for compatibility"""
+        return self.get_recent_transactions(days)

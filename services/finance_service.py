@@ -32,7 +32,7 @@ class FinanceService:
                 new_balance = current_balance + transaction_amount
                 if transaction.type != 'initial_balance':  # Don't count initial balance as income
                     total_income += transaction_amount
-            elif transaction.type in ['purchase', 'expense', 'withdrawal']:
+            elif transaction.type in ['purchase', 'expense', 'withdrawal', 'production', 'packing']:
                 if transaction.type == 'withdrawal':
                     # Include withdrawal fee of Rp 3,000
                     total_amount = transaction_amount + 3000
@@ -75,7 +75,7 @@ class FinanceService:
         return safe_float(result[0]) if result else 0
     
     def get_financial_summary(self):
-        """Get financial summary"""
+        """Get financial summary - for compatibility with old code"""
         cursor = self.conn.cursor()
         cursor.execute('''
             SELECT 
@@ -83,7 +83,7 @@ class FinanceService:
                 COALESCE(total_income, 0),
                 COALESCE(total_expenses, 0),
                 (SELECT COUNT(*) FROM transactions WHERE type IN ('sale', 'se_income')) as total_income_transactions,
-                (SELECT COUNT(*) FROM transactions WHERE type IN ('purchase', 'expense', 'withdrawal')) as total_expense_transactions
+                (SELECT COUNT(*) FROM transactions WHERE type IN ('purchase', 'expense', 'withdrawal', 'production', 'packing')) as total_expense_transactions
             FROM finance 
             ORDER BY last_updated DESC LIMIT 1
         ''')
